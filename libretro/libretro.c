@@ -76,6 +76,14 @@
 #include "shared.h"
 #include "md_ntsc.h"
 #include "sms_ntsc.h"
+#ifdef PORTANDROID
+#define DEBUG_LEVEL 2
+#include "emu_retro.h"
+
+extern const char *cb_mcd_u_bios;
+extern const char *cb_mcd_e_bios;
+extern const char *cb_mcd_j_bios;
+#endif
 
 #define STATIC_ASSERT(name, test) typedef struct { int assert_[(test)?1:-1]; } assert_ ## name ## _
 #define M68K_MAX_CYCLES 1107
@@ -2291,7 +2299,18 @@ bool retro_load_game(const struct retro_game_info *info)
    snprintf(CD_BIOS_US, sizeof(CD_BIOS_US), "%s%cbios_CD_U.bin", dir, slash);
    snprintf(CD_BIOS_JP, sizeof(CD_BIOS_JP), "%s%cbios_CD_J.bin", dir, slash);
    snprintf(CART_BRAM, sizeof(CART_BRAM), "%s%ccart.brm", save_dir, slash);
-
+#ifdef PORTANDROID
+	//Set external CD BIOS path
+   if(cb_mcd_e_bios){
+      snprintf(CD_BIOS_EU, sizeof(CD_BIOS_EU), "%s", cb_mcd_e_bios);
+   }
+   if(cb_mcd_u_bios){
+      snprintf(CD_BIOS_US, sizeof(CD_BIOS_US), "%s", cb_mcd_u_bios);
+   }
+   if(cb_mcd_j_bios){
+      snprintf(CD_BIOS_JP, sizeof(CD_BIOS_JP), "%s", cb_mcd_j_bios);
+   }
+#endif
    check_variables();
 
    if (log_cb)
@@ -2481,15 +2500,27 @@ void retro_run(void)
 
    if (system_hw == SYSTEM_MCD)
    {
+   #ifdef PORTANDROID
+      system_frame_scd(cb_settings.frame_skip_direct ? cb_context.video_skip : 0);
+   #else
       system_frame_scd(0);
+   #endif
    }
    else if ((system_hw & SYSTEM_PBC) == SYSTEM_MD)
    {
+   #ifdef PORTANDROID
+      system_frame_gen(cb_settings.frame_skip_direct ? cb_context.video_skip : 0);
+   #else
       system_frame_gen(0);
+   #endif
    }
    else
    {
+   #ifdef PORTANDROID
+      system_frame_sms(cb_settings.frame_skip_direct ? cb_context.video_skip : 0);
+   #else
       system_frame_sms(0);
+   #endif
    }
 
    if (bitmap.viewport.changed & 9)
