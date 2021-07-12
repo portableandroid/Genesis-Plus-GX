@@ -629,6 +629,7 @@ static void config_default(void)
    config.ntsc     = 0;
    config.lcd      = 0;
    config.render   = 0;
+   config.left_border = 0;
 
    /* input options */
    input.system[0] = SYSTEM_GAMEPAD;
@@ -913,6 +914,12 @@ static void update_overclock(void)
     }
 }
 #endif
+
+static void check_sms_border(void)
+{
+	if (config.left_border && (bitmap.viewport.x == 0) && ((system_hw == SYSTEM_MARKIII) || (system_hw & SYSTEM_SMS) || (system_hw == SYSTEM_PBC)))
+		bitmap.viewport.x = -8;
+}
 
 static void check_variables(void)
 {
@@ -1396,6 +1403,18 @@ static void check_variables(void)
     else
       config.invert_mouse = 1;
   }
+  
+  var.key = "genesis_plus_gx_left_border";
+  environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var);
+  {
+    orig_value = config.left_border;
+    if (!var.value || !strcmp(var.value, "disabled"))
+      config.left_border = 0;
+    else if (var.value && !strcmp(var.value, "enabled"))
+      config.left_border = 1;
+    if (orig_value != config.left_border)
+      update_viewports = true;
+  }
 
 #ifdef HAVE_OVERCLOCK
   var.key = "genesis_plus_gx_overclock";
@@ -1446,6 +1465,7 @@ static void check_variables(void)
       bitmap.viewport.x = (config.overscan & 2) ? 14 : -48;
     else
       bitmap.viewport.x = (config.overscan & 2) * 7;
+      check_sms_border();
   }
 }
 
@@ -2008,6 +2028,7 @@ void retro_set_environment(retro_environment_t cb)
       { "genesis_plus_gx_lcd_filter", "LCD Ghosting filter; disabled|enabled" },
       { "genesis_plus_gx_overscan", "Borders; disabled|top/bottom|left/right|full" },
       { "genesis_plus_gx_gg_extra", "Game Gear extended screen; disabled|enabled" },
+	  { "genesis_plus_gx_left_border", "Hide Master System Left Border; disabled|enabled" },
       { "genesis_plus_gx_aspect_ratio", "Core-provided aspect ratio; auto|NTSC PAR|PAL PAR" },
       { "genesis_plus_gx_render", "Interlaced mode 2 output; single field|double field" },
       { "genesis_plus_gx_gun_cursor", "Show Lightgun crosshair; disabled|enabled" },
@@ -2369,7 +2390,7 @@ bool retro_unserialize(const void *data, size_t size)
    overclock_delay = OVERCLOCK_FRAME_DELAY;
    update_overclock();
 #endif
-
+   check_sms_border();
    return TRUE;
 }
 
@@ -2648,6 +2669,7 @@ bool retro_load_game(const struct retro_game_info *info)
    audio_init(SOUND_FREQUENCY, 0);
    system_init();
    system_reset();
+   check_sms_border();
    is_running = false;
 
    if (system_hw == SYSTEM_MCD)
