@@ -2,7 +2,7 @@
  *  Genesis Plus
  *  Mega Drive cartridge hardware support
  *
- *  Copyright (C) 2007-2021  Eke-Eke (Genesis Plus GX)
+ *  Copyright (C) 2007-2023  Eke-Eke (Genesis Plus GX)
  *
  *  Many cartridge protections were initially documented by Haze
  *  (http://haze.mameworld.info/)
@@ -44,6 +44,7 @@
 #include "shared.h"
 #include "eeprom_i2c.h"
 #include "eeprom_spi.h"
+#include "megasd.h"
 
 /* Cart database entry */
 typedef struct
@@ -70,6 +71,7 @@ static uint32 mapper_flashkit_r(uint32 address);
 static uint32 mapper_smw_64_r(uint32 address);
 static void mapper_smw_64_w(uint32 address, uint32 data);
 static void mapper_realtec_w(uint32 address, uint32 data);
+static uint32 mapper_realtec_r(uint32 address);
 static void mapper_seganet_w(uint32 address, uint32 data);
 static void mapper_32k_w(uint32 data);
 static void mapper_64k_w(uint32 data);
@@ -376,20 +378,20 @@ void md_cart_init(void)
     zbank_memory_map[i].write   = zbank_unused_w;
   }
 
-  /* support for Quackshot REV 01 (real) dump */
-  if (strstr(rominfo.product,"00004054-01") && (cart.romsize == 0x80000))
+  /* support for Quackshot REV A original ROM dump (512KB) */
+  if (strstr(rominfo.product,"00004054-01") && (cart.romsize == 0x80000) && (rominfo.checksum == 0xa4b3))
   {
-    /* $000000-$0fffff: first 256K mirrored (A18 not connected to ROM chip, A19 not decoded) */
+    /* $000000-$0fffff: lower 256KB mirrored (VA18 and VA19 not connected to ROM chip) */
     for (i=0x00; i<0x10; i++)
     {
-      /* $200000-$3fffff: mirror of $000000-$1fffff (A21 not decoded) */
+      /* $200000-$3fffff: mirror of $000000-$1fffff (VA21 not connected to ROM chip) */
       m68k.memory_map[i].base = m68k.memory_map[i + 0x20].base = cart.rom + ((i & 0x03) << 16);
     }
 
-    /* $100000-$1fffff: second 256K mirrored (A20 connected to ROM chip A18) */
+    /* $100000-$1fffff: upper 256KB mirrored (VA20 connected to ROM chip A19) */
     for (i=0x10; i<0x20; i++)
     {
-      /* $200000-$3fffff: mirror of $000000-$1fffff (A21 not decoded) */
+      /* $200000-$3fffff: mirror of $000000-$1fffff (VA21 not connected to ROM chip) */
       m68k.memory_map[i].base = m68k.memory_map[i + 0x20].base = cart.rom + 0x40000 + ((i & 0x03) << 16);
     }
   }
@@ -454,79 +456,6 @@ void md_cart_init(void)
   }
 
   /**********************************************
-          LOCK-ON 
-  ***********************************************/
-
-  /* clear existing patches */
-  ggenie_shutdown();
-  areplay_shutdown();
-
-  /* initialize extra hardware */
-  switch (config.lock_on)
-  {
-    case TYPE_GG:
-    {
-      ggenie_init();
-      break;
-    }
-
-    case TYPE_AR:
-    {
-      areplay_init();
-      break;
-    }
-
-    case TYPE_SK:
-    {
-      /* store S&K ROM above cartridge ROM (and before backup memory) */
-      if (cart.romsize > 0x600000) break;
-
-      /* try to load Sonic & Knuckles ROM file (2 MB) */
-      if (load_archive(SK_ROM, cart.rom + 0x600000, 0x200000, NULL) == 0x200000)
-      {
-        /* check ROM header */
-        if (!memcmp(cart.rom + 0x600000 + 0x120, "SONIC & KNUCKLES",16))
-        {
-          /* try to load Sonic 2 & Knuckles UPMEM ROM (256 KB) */
-          if (load_archive(SK_UPMEM, cart.rom + 0x900000, 0x40000, NULL) == 0x40000)
-          {
-            /* $000000-$1FFFFF is mapped to S&K ROM */
-            for (i=0x00; i<0x20; i++)
-            {
-              m68k.memory_map[i].base = cart.rom + 0x600000 + (i << 16);
-            }
-
-#ifdef LSB_FIRST
-            for (i=0; i<0x200000; i+=2)
-            {
-              /* Byteswap ROM */
-              uint8 temp = cart.rom[i + 0x600000];
-              cart.rom[i + 0x600000] = cart.rom[i + 0x600000 + 1];
-              cart.rom[i + 0x600000 + 1] = temp;
-            }
-
-            for (i=0; i<0x40000; i+=2)
-            {
-              /* Byteswap ROM */
-              uint8 temp = cart.rom[i + 0x900000];
-              cart.rom[i + 0x900000] = cart.rom[i + 0x900000 + 1];
-              cart.rom[i + 0x900000 + 1] = temp;
-            }
-#endif
-            cart.special |= HW_LOCK_ON;
-          }
-        }
-      }
-      break;
-    }
-
-    default:
-    {
-      break;
-    }
-  }
-
-  /**********************************************
         CARTRIDGE EXTRA HARDWARE
   ***********************************************/
   memset(&cart.hw, 0, sizeof(cart.hw));
@@ -569,27 +498,39 @@ void md_cart_init(void)
   /* Realtec mapper */
   if (cart.hw.realtec)
   {
-    /* 8k BOOT ROM */
+    /* copy 8KB Boot ROM after cartridge ROM area */
     for (i=0; i<8; i++)
     {
-      memcpy(cart.rom + 0x900000 + i*0x2000, cart.rom + 0x7e000, 0x2000);
+      memcpy(cart.rom + 0x400000 + i*0x2000, cart.rom + 0x7e000, 0x2000);
     }
 
-    /* BOOT ROM is mapped to $000000-$3FFFFF */
-    for (i=0x00; i<0x40; i++)
-    {
-      m68k.memory_map[i].base = cart.rom + 0x900000;
-    }
+    /* specific read handler for ROM header area */
+    m68k.memory_map[0].read16 = mapper_realtec_r;
   }
 
   /* detect specific mappers */
-  if (strstr(rominfo.consoletype,"SEGA SSF"))
+  else if (strstr(rominfo.consoletype,"SEGA SSF"))
   {
     /* Everdrive extended SSF mapper */
     cart.hw.time_w = mapper_512k_w;
 
     /* cartridge ROM mapping is reinitialized on /VRES */
     cart.hw.bankshift = 1;
+  }
+  else if ((strstr(rominfo.consoletype,"SEGA SSF2") != NULL) && (cart.romsize <= 0x800000))
+  {
+    /* MegaSD enhanced SSF2 mapper (max. 8MB ROM) */
+    cart.special |= HW_MEGASD;
+    cart.hw.time_w = megasd_enhanced_ssf2_mapper_w;
+
+    /* cartridge ROM mapping is reinitialized on /VRES */
+    cart.hw.bankshift = 1;
+  }
+  else if ((strstr(rominfo.consoletype,"SEGA MEGASD") != NULL) && (cart.romsize <= 0x400000))
+  {
+    /* MegaSD ROM write mapper (max. 4MB ROM) */
+    cart.special |= HW_MEGASD;
+    cart.hw.time_w = megasd_rom_mapper_w;
   }
   else if (strstr(rominfo.domestic,"SUPER STREET FIGHTER2"))
   {
@@ -760,6 +701,99 @@ void md_cart_init(void)
   {
     cart.hw.time_w = default_time_w;
   }
+
+  /**********************************************
+          LOCK-ON 
+  ***********************************************/
+
+  /* clear existing patches */
+  ggenie_shutdown();
+  areplay_shutdown();
+
+  /* initialize extra hardware */
+  switch (config.lock_on)
+  {
+    case TYPE_GG:
+    {
+      ggenie_init();
+      break;
+    }
+
+    case TYPE_AR:
+    {
+      areplay_init();
+      break;
+    }
+
+    case TYPE_SK:
+    {
+      /* store Sonic & Knuckles ROM files after cartridge ROM area */
+      if (cart.romsize > 0x400000) break;
+
+      /* try to load Sonic & Knuckles ROM file (2MB) */
+      if (load_archive(SK_ROM, cart.rom + 0x400000, 0x200000, NULL) == 0x200000)
+      {
+        /* check ROM header */
+        if (!memcmp(cart.rom + 0x400000 + 0x120, "SONIC & KNUCKLES",16))
+        {
+          /* try to load Sonic 2 & Knuckles upmem ROM file (256KB) */
+          if (load_archive(SK_UPMEM, cart.rom + 0x600000, 0x40000, NULL) == 0x40000)
+          {
+            /* $000000-$1FFFFF is mapped to S&K ROM */
+            for (i=0x00; i<0x20; i++)
+            {
+              m68k.memory_map[i].base = cart.rom + 0x400000 + (i << 16);
+            }
+
+#ifdef LSB_FIRST
+            for (i=0; i<0x200000; i+=2)
+            {
+              /* Byteswap ROM */
+              uint8 temp = cart.rom[i + 0x400000];
+              cart.rom[i + 0x400000] = cart.rom[i + 0x400000 + 1];
+              cart.rom[i + 0x400000 + 1] = temp;
+            }
+
+            for (i=0; i<0x40000; i+=2)
+            {
+              /* Byteswap ROM */
+              uint8 temp = cart.rom[i + 0x600000];
+              cart.rom[i + 0x600000] = cart.rom[i + 0x600000 + 1];
+              cart.rom[i + 0x600000 + 1] = temp;
+            }
+#endif
+            cart.special |= HW_LOCK_ON;
+          }
+        }
+      }
+      break;
+    }
+
+    default:
+    {
+      break;
+    }
+  }
+
+  /**********************************************
+        MEGASD ADD-ON
+  ***********************************************/
+  /* enable MegaSD overlay for cartridge ROM (max. 8MB) when Mega CD hardware is disabled and either MegaSD add-on is forced enabled or automatic add-on detection is enabled and MegaSD compatible disc image is loaded */
+  if ((cart.romsize <= 0x800000) && (system_hw == SYSTEM_MD) && ((config.add_on == HW_ADDON_MEGASD) || ((config.add_on | cdd.loaded) == HW_ADDON_MEGASD)))
+  {
+    cart.special |= HW_MEGASD;
+  }
+
+  /* force Mega CD sound hardware initialization when MegaSD overlay is enabled (if not already initialized)  */
+  if ((cart.special & HW_MEGASD) && !snd.blips[1] && !snd.blips[2])
+  {
+    /* allocate blip buffers for PCM and CD-DA audio streams */
+    snd.blips[1] = blip_new(snd.sample_rate / 10);
+    snd.blips[2] = blip_new(snd.sample_rate / 10);
+
+    /* initialize PCM and CD-DA audio */
+    audio_set_rate(snd.sample_rate, snd.frame_rate);
+  }
 }
 
 /* hardware that need to be reseted on power on */
@@ -767,15 +801,36 @@ void md_cart_reset(int hard_reset)
 {
   int i;
 
+  /* Realtec mapper */
+  if (cart.hw.realtec)
+  {
+    /* Boot ROM (8KB mirrored) is mapped to $000000-$3FFFFF */
+    for (i=0x00; i<0x40; i++)
+    {
+      m68k.memory_map[i].base = cart.rom + 0x400000;
+    }
+
+    /* Reset mapper */
+    cart.hw.regs[0] = 0;
+    cart.hw.regs[1] = 0;
+    cart.hw.regs[2] = 0;
+  }
+
   /* reset cartridge mapping */
-  if (cart.hw.bankshift)
+  else if (cart.hw.bankshift)
   {
     for (i=0x00; i<0x40; i++)
     {
       m68k.memory_map[i].base = cart.rom + ((i<<16) & cart.mask);
     }
   }
-  
+
+  /* MegaSD hardware */
+  if (cart.special & HW_MEGASD)
+  {
+    megasd_reset();
+  }
+
   /* SVP chip */
   if (svp)
   {
@@ -828,7 +883,7 @@ int md_cart_context_save(uint8 *state)
   {
     /* get base address */
     base = m68k.memory_map[i].base;
-      
+
     if (base == sram.sram)
     {
       /* SRAM */
@@ -855,6 +910,12 @@ int md_cart_context_save(uint8 *state)
     save_param(svp->iram_rom, 0x800);
     save_param(svp->dram,sizeof(svp->dram));
     save_param(&svp->ssp1601,sizeof(ssp1601_t));
+  }
+
+  /* MegaSD hardware */
+  if (cart.special & HW_MEGASD)
+  {
+    bufferptr += megasd_context_save(&state[bufferptr]);
   }
 
   return bufferptr;
@@ -913,6 +974,12 @@ int md_cart_context_load(uint8 *state)
     load_param(&svp->ssp1601,sizeof(ssp1601_t));
   }
 
+  /* MegaSD hardware */
+  if (cart.special & HW_MEGASD)
+  {
+    bufferptr += megasd_context_load(&state[bufferptr]);
+  }
+
   return bufferptr;
 }
 
@@ -953,12 +1020,12 @@ static void mapper_sega_w(uint32 data)
     }
 
     /* S&K lock-on chip */
-    if ((cart.special & HW_LOCK_ON) && (config.lock_on == TYPE_SK))
+    if (cart.special & HW_LOCK_ON)
     {
-      /* S2K upmem chip mapped to $300000-$3fffff (256K mirrored) */
+      /* S2K upmem chip mapped to $300000-$3fffff (256KB mirrored) */
       for (i=0x30; i<0x40; i++)
       {
-        m68k.memory_map[i].base = (cart.rom + 0x900000) + ((i & 3) << 16);
+        m68k.memory_map[i].base = (cart.rom + 0x600000) + ((i & 3) << 16);
       }
     }
   }
@@ -1561,48 +1628,74 @@ static uint32 mapper_smw_64_r(uint32 address)
 }
 
 /* 
-  Realtec ROM bankswitch (Earth Defend, Balloon Boy & Funny World, Whac-A-Critter)
-  (Note: register usage is inverted in TascoDlx documentation)
+  Realtec ROM bankswitch (Earth Defend, Balloon Boy & Funny World, Whac-A-Critter, Tom Clown)
+  Verified with real cartridge hardware (slightly different from behavior described in TascoDlx documentation)
 */
 static void mapper_realtec_w(uint32 address, uint32 data)
 {
   switch (address)
   {
-    case 0x402000:  
+    case 0x402000: 
     {
-      /* number of mapped 64k blocks (the written value is a number of 128k blocks) */
-      cart.hw.regs[2] = data << 1;
+      /* fixed ROM bank size */
+      /* when bit 0 is set, ROM A16 pin is forced to value configured in register below (connected to VA17 otherwise) */
+      /* when bit 1 is set, ROM A17 pin is forced to value configured in register below (connected to VA18 otherwise) */
+      /* other bits have no effect */
+      cart.hw.regs[1] = (data & 3) << 1;
       return;
     }
 
-    case 0x404000:
+    case 0x404000: 
     {
-      /* 00000xxx */
-      cart.hw.regs[0] = data & 7;
+      /* fixed ROM bank selection (4 x 128KB banks) */
+      /* bit 0 corresponds to ROM A16 pin value when forced */
+      /* bit 1 corresponds to ROM A17 pin value when forced */
+      /* other bits have no effect */
+      cart.hw.regs[2] = (data & 3) << 1;
       return;
     }
 
     case 0x400000:  
     {
-      /* 00000yy1 */
-      cart.hw.regs[1] = data & 6;
-
-      /* ensure mapped size is not null */
-      if (cart.hw.regs[2])
+      /* ROM access enable */
+      /* when bit 0 is set, ROM A17/A16 pins are set according to above registers and ROM A15/A12 pins are connected to VA16-VA13 (forced to 1 on reset) */
+      /* other bits habe no effect */
+      if (data & 0x01)
       {
-        /* mapped start address is 00yy xxx0 0000 0000 0000 0000 */
-        uint32 base = (cart.hw.regs[0] << 1) | (cart.hw.regs[1] << 3);
-
-        /* selected blocks are mirrored into the whole cartridge area */
-        int i;
-        for (i=0x00; i<0x40; i++)
+        /* once ROM access is enabled, ROM mapping can not be modified until next reset */
+        if (!cart.hw.regs[0])
         {
-          m68k.memory_map[i].base = &cart.rom[(base + (i % cart.hw.regs[2])) << 16];
+          int i;
+          for (i=0x00; i<0x40; i++)
+          {
+            /* 0x000000-0x07ffff mapped area is mirrored in 4MB cartridge range (VA21-VA19 not connected) */
+            uint32 base = i & 7;
+
+            /* adjust 64k mapped area ROM base address according to fixed ROM bank configuration (see above) */
+            base = (base & ~cart.hw.regs[1]) | (cart.hw.regs[2] & cart.hw.regs[1]);
+
+            m68k.memory_map[i].base = &cart.rom[base << 16];
+          }
+
+          cart.hw.regs[0] = data;
         }
       }
       return;
     }
   }
+}
+
+static uint32 mapper_realtec_r(uint32 address)
+{
+  /* /VRES is asserted to bypass TMSS licensing screen when first read access to cartridge ROM header is detected */
+  if ((address == 0x100) && (m68k.memory_map[0].base = cart.base))
+  {
+    /* asserting /VRES from cartridge should only reset 68k CPU (TODO: confirm this on real hardware) */
+    m68k_pulse_reset();
+  }
+
+  /* default ROM area read handler */
+  return *(uint16 *)(m68k.memory_map[0].base + (address & 0xfffe));
 }
 
 /* Game no Kanzume Otokuyou ROM Mapper */
@@ -1905,23 +1998,24 @@ static uint32 mapper_128k_radica_r(uint32 address)
 
 
 /*
-  Custom logic (ST 16S25HB1 PAL) used in Micro Machines US cartridge (SR16V1.1 board)
-  +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-   /VRES is asserted after write access to 0xA14101 (TMSS bank-shift register)
-   with D0=1 (cartridge ROM access enabled instead of TMSS Boot ROM) being detected 
+  Custom logic (ST 16S25HB1 PAL) used in Micro Machines USA cartridge (SR16V1.1 board)
+  ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+   /VRES is asserted to bypass TMSS security checks when write access to 0xA141xx 
+   with D0=1 is detected (access to cartridge ROM enabled instead of TMSS Boot ROM)
 */
 static void mapper_sr16v1_w(uint32 address, uint32 data)
 {
-  /* 0xA10000-0xA1FFFF address range is mapped to I/O and Control registers */
+  /* default I/O and Control registers write handler */
   ctrl_io_write_byte(address, data);
 
-  /* cartridge uses /LWR, /AS and VA1-VA18 (only VA8-VA17 required to decode access to TMSS bank-shift register) */
+  /* cartridge uses /LWR, /AS and VA1-VA18 (only VA8-VA17 are required to decode access to TMSS bankswitch register) */
   if ((address & 0xff01) == 0x4101)
   {
-    /* cartridge ROM is enabled when D0=1 */
+    /* check if cartridge ROM is enabled (D0=1) */
     if (data & 0x01)
     {
-      gen_reset(0);
+      /* asserting /VRES from cartridge should only reset 68k CPU (TODO: confirm this on real hardware) */
+       m68k_pulse_reset();
     }
   }
 }

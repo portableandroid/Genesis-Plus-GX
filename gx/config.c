@@ -3,7 +3,7 @@
  *
  *  Genesis Plus GX configuration file support
  *
- *  Copyright Eke-Eke (2007-2021)
+ *  Copyright Eke-Eke (2007-2022)
  *
  *  Redistribution and use of this code or any derivative works are permitted
  *  provided that the following conditions are met:
@@ -100,10 +100,12 @@ void config_default(void)
   /* sound options */
   config.psg_preamp     = 150;
   config.fm_preamp      = 100;
+  config.cdda_volume    = 100;
+  config.pcm_volume     = 100;
   config.hq_fm          = 1;
   config.hq_psg         = 1;
   config.filter         = 1;
-  config.lp_range       = 0x7FFF; /* 0.5 in 0.16 fixed point */
+  config.lp_range       = 0x9999; /* 0.6 in 0.16 fixed point */
   config.low_freq       = 880;
   config.high_freq      = 5000;
   config.lg             = 100;
@@ -122,7 +124,12 @@ void config_default(void)
   config.addr_error     = 1;
   config.bios           = 0;
   config.lock_on        = 0;
+  config.add_on         = HW_ADDON_AUTO;
   config.hot_swap       = 0;
+  config.cd_latency     = 1;
+  config.m68k_overclock = 1.0;
+  config.s68k_overclock = 1.0;
+  config.z80_overclock  = 1.0;
 
   /* video options */
   config.xshift   = 0;
@@ -137,6 +144,8 @@ void config_default(void)
   config.vsync    = 1; /* AUTO */
   config.bilinear = 0;
   config.vfilter  = 1;
+  config.enhanced_vscroll = 0;
+  config.enhanced_vscroll_limit = 8;
 
   if (VIDEO_HaveComponentCable())
   {
